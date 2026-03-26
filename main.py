@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 R4J M1SHR4 - Facebook Message Automation Bot
-Pure Python backend script that runs from files
-Supports both Regular and E2EE chats
+Pure Python backend script - MEMORY LEAK FIXED VERSION
+Supports both Regular and E2EE chats with automatic browser restart
 """
 
 import os
@@ -319,7 +319,7 @@ class FileManager:
 
 
 # ============================================================================
-# BROWSER MANAGER
+# BROWSER MANAGER - WITH MEMORY CLEANUP
 # ============================================================================
 
 class BrowserManager:
@@ -329,16 +329,32 @@ class BrowserManager:
         self.driver = None
     
     def setup_browser(self) -> webdriver.Chrome:
-        """Setup Chrome browser with options"""
+        """Setup Chrome browser with options - MEMORY OPTIMIZED"""
         chrome_options = Options()
+        
+        # CRITICAL: Headless mode with memory optimization
         chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-setuid-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
         chrome_options.add_argument('--disable-extensions')
-        chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--disable-plugins')
+        chrome_options.add_argument('--disable-images')
+        chrome_options.add_argument('--disable-javascript')
+        chrome_options.add_argument('--disable-web-security')
+        chrome_options.add_argument('--disable-features=VizDisplayCompositor')
+        chrome_options.add_argument('--disable-software-rasterizer')
+        chrome_options.add_argument('--disable-logging')
+        chrome_options.add_argument('--log-level=3')
+        chrome_options.add_argument('--silent')
+        chrome_options.add_argument('--window-size=1280,720')  # Smaller window = less memory
         chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36')
+        
+        # Memory optimization flags
+        chrome_options.add_argument('--memory-pressure-off')
+        chrome_options.add_argument('--max_old_space_size=256')
+        chrome_options.add_argument('--js-flags="--max-old-space-size=256"')
         
         # Try to find Chrome/Chromium binary
         chromium_paths = [
@@ -375,8 +391,8 @@ class BrowserManager:
             else:
                 self.driver = webdriver.Chrome(options=chrome_options)
             
-            self.driver.set_window_size(1920, 1080)
-            logger.info("Browser setup completed")
+            self.driver.set_window_size(1280, 720)
+            logger.info("Browser setup completed with memory optimization")
             return self.driver
         except Exception as e:
             logger.error(f"Browser setup failed: {e}")
@@ -611,12 +627,24 @@ class BrowserManager:
         except:
             return 'REGULAR'
     
+    def clear_memory(self):
+        """Clear browser memory by navigating to blank page"""
+        try:
+            self.driver.get('about:blank')
+            self.driver.execute_script("window.localStorage.clear();")
+            self.driver.execute_script("window.sessionStorage.clear();")
+            logger.info("Browser memory cleared")
+        except:
+            pass
+    
     def close(self):
-        """Close the browser"""
+        """Close the browser and free memory"""
         if self.driver:
             try:
+                # Clear memory before closing
+                self.clear_memory()
                 self.driver.quit()
-                logger.info("Browser closed")
+                logger.info("Browser closed and memory freed")
             except:
                 pass
             self.driver = None
@@ -635,12 +663,14 @@ class MessageFormatter:
         self.lastname = ''
         self.haters_index = 0
         self.messages_index = 0
+        self.last_reload_time = 0
     
     def reload_data(self):
         """Reload data from files"""
         self.haters = FileManager.read_haters()
         self.messages = FileManager.read_messages()
         self.lastname = FileManager.read_lastname()
+        self.last_reload_time = time.time()
         
         logger.info(f"Loaded {len(self.haters)} haters, {len(self.messages)} messages")
     
@@ -651,6 +681,10 @@ class MessageFormatter:
     
     def get_next_message(self) -> Tuple[str, int, int]:
         """Get next formatted message and update indices"""
+        # Reload data every 100 messages to pick up changes
+        if time.time() - self.last_reload_time > 300:  # Every 5 minutes
+            self.reload_data()
+        
         if not self.haters:
             self.reload_data()
         
@@ -681,7 +715,7 @@ class MessageFormatter:
 
 
 # ============================================================================
-# AUTOMATION ENGINE
+# AUTOMATION ENGINE - WITH MEMORY MANAGEMENT
 # ============================================================================
 
 class AutomationEngine:
@@ -698,6 +732,10 @@ class AutomationEngine:
         self.total_messages_sent = 0
         self.chat_type = 'REGULAR'
         self.e2ee_thread_id = ''
+        
+        # MEMORY MANAGEMENT SETTINGS
+        self.messages_per_session = 30  # Har 30 messages baad browser restart
+        self.current_session_messages = 0
         
         # Load initial state
         state = self.db.get_state()
@@ -794,10 +832,10 @@ class AutomationEngine:
         
         return False, 'REGULAR'
     
-    def run_with_cookie(self, cookie_string: str, cookie_index: int) -> Tuple[bool, int]:
+    def run_session_with_cookie(self, cookie_string: str, cookie_index: int) -> Tuple[bool, int]:
         """
-        Run automation with a specific cookie
-        Returns: (should_continue, messages_sent)
+        Run ONE SESSION with a specific cookie
+        Returns: (should_continue_with_same_cookie, messages_sent)
         """
         messages_sent = 0
         thread_id = FileManager.read_thread_id()
@@ -807,24 +845,29 @@ class AutomationEngine:
             logger.error("No thread ID found in thread_id.txt")
             return False, 0
         
+        cookie_preview = cookie_string[:50] + "..." if len(cookie_string) > 50 else cookie_string
+        logger.info(f"=== Starting session with Cookie #{cookie_index + 1}: {cookie_preview} ===")
+        
         try:
-            # Navigate to Facebook
+            # Setup fresh browser for this session
+            self.browser.setup_browser()
+            
+            # Login with cookie
             self.browser.driver.get('https://www.facebook.com/')
             time.sleep(5)
-            
-            # Add cookies
             self.browser.add_cookies(cookie_string)
             self.browser.driver.refresh()
             time.sleep(5)
             
             # Check login status
             if not self.browser.check_login():
-                logger.error("Cookie login failed - invalid or expired")
+                logger.error(f"Cookie #{cookie_index + 1} login failed - invalid or expired")
+                self.db.log_cookie_rotation(cookie_index, cookie_preview, 'failed', 0, 'Login failed')
                 return False, 0
             
-            logger.info("Successfully logged in with cookie")
+            logger.info(f"Cookie #{cookie_index + 1} login successful")
             
-            # Navigate to conversation with auto-detection
+            # Navigate to conversation
             success, detected_type = self.detect_thread_type_and_navigate(thread_id)
             
             if not success:
@@ -841,8 +884,8 @@ class AutomationEngine:
             
             logger.info("Message input found, starting message loop")
             
-            # Send messages with this cookie
-            while self.is_running and not self.should_stop:
+            # Send messages in this session
+            while self.is_running and not self.should_stop and self.current_session_messages < self.messages_per_session:
                 try:
                     # Reload data periodically
                     if messages_sent % 10 == 0:
@@ -857,11 +900,17 @@ class AutomationEngine:
                             success, detected_type = self.detect_thread_type_and_navigate(thread_id)
                             if not success:
                                 logger.error("Failed to navigate to new conversation")
-                                return False, messages_sent
+                                return True, messages_sent
                             time.sleep(5)
                             message_input = self.browser.find_message_input()
                             if not message_input:
-                                return False, messages_sent
+                                return True, messages_sent
+                    
+                    # Check cookie validity every 10 messages
+                    if messages_sent > 0 and messages_sent % 10 == 0:
+                        if not self.browser.check_login():
+                            logger.warning("Cookie appears to be expired during session")
+                            return False, messages_sent
                     
                     # Get formatted message
                     message, hater_idx, msg_idx = self.formatter.get_next_message()
@@ -869,7 +918,7 @@ class AutomationEngine:
                     if not message.strip():
                         message = "Hello!"
                     
-                    logger.info(f"Sending message #{self.total_messages_sent + messages_sent + 1}: {message[:50]}...")
+                    logger.info(f"Message #{self.total_messages_sent + messages_sent + 1}: {message[:50]}...")
                     
                     # Send the message
                     success = self.browser.send_message(message_input, message)
@@ -881,6 +930,7 @@ class AutomationEngine:
                             return False, messages_sent
                     
                     messages_sent += 1
+                    self.current_session_messages += 1
                     self.total_messages_sent += 1
                     
                     # Save state
@@ -895,12 +945,12 @@ class AutomationEngine:
                         'e2ee_thread_id': self.e2ee_thread_id
                     })
                     
-                    logger.info(f"Message sent successfully. Waiting {delay} seconds...")
+                    logger.info(f"✅ Message sent successfully. ({self.current_session_messages}/{self.messages_per_session} in this session)")
                     
                     # Wait for delay
                     for _ in range(delay):
                         if self.should_stop or not self.is_running:
-                            return False, messages_sent
+                            return True, messages_sent
                         time.sleep(1)
                     
                 except WebDriverException as e:
@@ -909,29 +959,28 @@ class AutomationEngine:
                 except Exception as e:
                     logger.error(f"Unexpected error in message loop: {e}")
                     logger.debug(traceback.format_exc())
-                    
-                    # Try to recover
-                    try:
-                        message_input = self.browser.find_message_input()
-                        if not message_input:
-                            logger.error("Cannot recover - message input lost")
-                            return False, messages_sent
-                    except:
-                        return False, messages_sent
-                    
                     time.sleep(5)
             
-            return False, messages_sent
+            # Session completed successfully
+            if self.current_session_messages >= self.messages_per_session:
+                logger.info(f"Session completed: {messages_sent} messages sent with Cookie #{cookie_index + 1}")
+                return True, messages_sent  # Continue with same cookie
+            else:
+                return False, messages_sent  # Stop automation
             
         except Exception as e:
-            logger.error(f"Error in run_with_cookie: {e}")
+            logger.error(f"Error in session: {e}")
             logger.debug(traceback.format_exc())
             return False, messages_sent
+        finally:
+            # CRITICAL: Close browser to free memory after session
+            self.browser.close()
+            logger.info(f"Session ended. Browser closed, memory freed.")
     
     def run(self):
-        """Main automation loop"""
+        """Main automation loop with proper session management"""
         logger.info("=" * 60)
-        logger.info("R4J M1SHR4 Automation Bot Starting...")
+        logger.info("R4J M1SHR4 Automation Bot Starting... (MEMORY FIXED VERSION)")
         logger.info("=" * 60)
         
         self.is_running = True
@@ -944,7 +993,7 @@ class AutomationEngine:
             logger.error("No cookies found. Exiting.")
             return
         
-        # Main loop - rotate through cookies
+        # Main loop - run sessions
         while self.is_running and not self.should_stop:
             try:
                 # Get current cookie
@@ -952,51 +1001,48 @@ class AutomationEngine:
                     self.current_cookie_index = 0
                 
                 cookie_string = self.cookies[self.current_cookie_index]
-                cookie_preview = cookie_string[:50] + "..." if len(cookie_string) > 50 else cookie_string
                 
-                logger.info(f"=== Using Cookie #{self.current_cookie_index + 1}/{len(self.cookies)} ===")
+                # Reset session counter for this cookie
+                self.current_session_messages = 0
                 
-                # Setup browser for this cookie
-                self.browser.setup_browser()
+                # Run a session with this cookie
+                continue_with_same, messages_sent = self.run_session_with_cookie(cookie_string, self.current_cookie_index)
                 
-                # Run with this cookie
-                should_continue, messages_sent = self.run_with_cookie(cookie_string, self.current_cookie_index)
+                if messages_sent > 0:
+                    # Log successful cookie usage
+                    cookie_preview = cookie_string[:50] + "..." if len(cookie_string) > 50 else cookie_string
+                    self.db.log_cookie_rotation(
+                        self.current_cookie_index,
+                        cookie_preview,
+                        'success',
+                        messages_sent,
+                        ''
+                    )
                 
-                # Log cookie usage
-                self.db.log_cookie_rotation(
-                    self.current_cookie_index,
-                    cookie_preview,
-                    'success' if messages_sent > 0 else 'failed',
-                    messages_sent,
-                    '' if messages_sent > 0 else 'No messages sent'
-                )
-                
-                # Close browser
-                self.browser.close()
-                
-                logger.info(f"Cookie #{self.current_cookie_index + 1} sent {messages_sent} messages")
-                
-                # If we need to continue with next cookie
-                if should_continue or not self.is_running or self.should_stop:
-                    break
-                
-                # Move to next cookie
-                self.current_cookie_index = (self.current_cookie_index + 1) % len(self.cookies)
-                self.db.update_state({
-                    'current_cookie_index': self.current_cookie_index,
-                    'current_haters_index': self.formatter.haters_index,
-                    'current_message_index': self.formatter.messages_index,
-                    'total_messages_sent': self.total_messages_sent,
-                    'is_running': True,
-                    'last_error': f'Switched to cookie #{self.current_cookie_index + 1}',
-                    'chat_type': self.chat_type,
-                    'e2ee_thread_id': self.e2ee_thread_id
-                })
-                
-                logger.info(f"Switching to cookie #{self.current_cookie_index + 1}")
-                
-                # Wait before using next cookie
-                time.sleep(5)
+                if continue_with_same and messages_sent > 0:
+                    # Cookie still valid, continue with same cookie
+                    logger.info(f"Cookie #{self.current_cookie_index + 1} still valid, continuing...")
+                    time.sleep(5)
+                    continue
+                else:
+                    # Cookie expired or failed, move to next cookie
+                    if messages_sent == 0:
+                        logger.warning(f"Cookie #{self.current_cookie_index + 1} failed, moving to next")
+                    
+                    self.current_cookie_index = (self.current_cookie_index + 1) % len(self.cookies)
+                    self.db.update_state({
+                        'current_cookie_index': self.current_cookie_index,
+                        'current_haters_index': self.formatter.haters_index,
+                        'current_message_index': self.formatter.messages_index,
+                        'total_messages_sent': self.total_messages_sent,
+                        'is_running': True,
+                        'last_error': f'Switched to cookie #{self.current_cookie_index + 1}',
+                        'chat_type': self.chat_type,
+                        'e2ee_thread_id': self.e2ee_thread_id
+                    })
+                    
+                    logger.info(f"Switching to cookie #{self.current_cookie_index + 1}")
+                    time.sleep(10)
                 
             except KeyboardInterrupt:
                 logger.info("Received interrupt signal")
@@ -1004,18 +1050,7 @@ class AutomationEngine:
             except Exception as e:
                 logger.error(f"Fatal error in main loop: {e}")
                 logger.debug(traceback.format_exc())
-                
-                # Try to recover
-                try:
-                    self.browser.close()
-                except:
-                    pass
-                
-                # Wait before retry
-                time.sleep(10)
-                
-                # Move to next cookie if this one caused issues
-                self.current_cookie_index = (self.current_cookie_index + 1) % len(self.cookies)
+                time.sleep(30)
         
         self.is_running = False
         self.db.update_state({
@@ -1047,11 +1082,11 @@ class AutomationEngine:
 
 
 # ============================================================================
-# MAIN ENTRY POINT - NO SIGNAL HANDLING
+# MAIN ENTRY POINT
 # ============================================================================
 
 def main():
-    """Main entry point - no signal handling for Streamlit compatibility"""
+    """Main entry point"""
     # Check for required files
     required_files = [
         ('cookies.txt', 'Add your Facebook cookies'),
@@ -1098,11 +1133,12 @@ def main():
             f.write("30")
         logger.info("Created default time.txt with delay 30 seconds")
     
-    # Run automation directly - no daemon, no signal handling
+    # Run automation
     logger.info("Starting automation...")
     logger.info(f"Cookies: {len(FileManager.read_cookies())} set(s)")
     logger.info(f"Thread ID: {FileManager.read_thread_id()}")
     logger.info(f"Delay: {FileManager.read_delay()} seconds")
+    logger.info(f"Messages per session: 30 (auto-restart for memory management)")
     
     engine = AutomationEngine()
     
