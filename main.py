@@ -10,7 +10,6 @@ import sys
 import time
 import json
 import logging
-import signal
 import threading
 import traceback
 from pathlib import Path
@@ -1048,88 +1047,11 @@ class AutomationEngine:
 
 
 # ============================================================================
-# MAIN ENTRY POINT
+# MAIN ENTRY POINT - NO SIGNAL HANDLING
 # ============================================================================
 
-class AutomationDaemon:
-    """Daemon that runs automation with auto-restart on crash"""
-    
-    def __init__(self):
-        self.engine = None
-        self.running = False
-        self.restart_count = 0
-        self.max_restarts = 10
-        self.restart_delay = 5
-    
-    def signal_handler(self, signum, frame):
-        """Handle shutdown signals"""
-        logger.info(f"Received signal {signum}, shutting down...")
-        self.running = False
-        if self.engine:
-            self.engine.stop()
-        sys.exit(0)
-    
-    def run(self):
-        """Run automation with auto-restart"""
-        # Register signal handlers
-        signal.signal(signal.SIGINT, self.signal_handler)
-        signal.signal(signal.SIGTERM, self.signal_handler)
-        
-        logger.info("R4J M1SHR4 Automation Daemon Starting...")
-        logger.info(f"Log file: {LOG_FILE}")
-        
-        self.running = True
-        
-        while self.running:
-            try:
-                # Create new engine instance
-                self.engine = AutomationEngine()
-                
-                # Run automation
-                self.engine.run()
-                
-                # If we get here, automation stopped normally
-                if not self.running:
-                    break
-                
-                # Check if we should restart
-                if self.engine.should_stop:
-                    break
-                
-                logger.info("Automation stopped, restarting...")
-                
-                # Increment restart count
-                self.restart_count += 1
-                if self.restart_count > self.max_restarts:
-                    logger.error(f"Exceeded maximum restart attempts ({self.max_restarts})")
-                    break
-                
-                # Wait before restart
-                time.sleep(self.restart_delay)
-                
-            except KeyboardInterrupt:
-                logger.info("Received interrupt signal")
-                break
-            except Exception as e:
-                logger.error(f"Daemon error: {e}")
-                logger.debug(traceback.format_exc())
-                
-                # Wait before restart
-                time.sleep(self.restart_delay)
-                
-                # Reset engine
-                if self.engine:
-                    try:
-                        self.engine.stop()
-                    except:
-                        pass
-                self.engine = None
-        
-        logger.info("Automation Daemon stopped")
-
-
 def main():
-    """Main entry point"""
+    """Main entry point - no signal handling for Streamlit compatibility"""
     # Check for required files
     required_files = [
         ('cookies.txt', 'Add your Facebook cookies'),
@@ -1176,9 +1098,23 @@ def main():
             f.write("30")
         logger.info("Created default time.txt with delay 30 seconds")
     
-    # Run daemon
-    daemon = AutomationDaemon()
-    daemon.run()
+    # Run automation directly - no daemon, no signal handling
+    logger.info("Starting automation...")
+    logger.info(f"Cookies: {len(FileManager.read_cookies())} set(s)")
+    logger.info(f"Thread ID: {FileManager.read_thread_id()}")
+    logger.info(f"Delay: {FileManager.read_delay()} seconds")
+    
+    engine = AutomationEngine()
+    
+    try:
+        engine.run()
+    except KeyboardInterrupt:
+        logger.info("Stopping...")
+        engine.stop()
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        logger.debug(traceback.format_exc())
+        engine.stop()
 
 
 if __name__ == "__main__":
